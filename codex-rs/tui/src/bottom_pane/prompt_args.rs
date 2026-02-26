@@ -8,6 +8,8 @@ use shlex::Shlex;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+pub const PROMPTS_CMD_SHORT_PREFIX: &str = "+";
+
 lazy_static! {
     static ref PROMPT_ARG_REGEX: Regex =
         Regex::new(r"\$[A-Z][A-Z0-9_]*").unwrap_or_else(|_| std::process::abort());
@@ -104,6 +106,24 @@ pub fn parse_positional_args(rest: &str, text_elements: &[TextElement]) -> Vec<P
     parse_tokens_with_elements(rest, text_elements)
 }
 
+/// Extract a custom prompt name from a slash command token.
+///
+/// Supports:
+/// - preferred `/name` form
+/// - legacy `/prompts:name` form
+/// - compatibility `/+name` form
+pub fn custom_prompt_name_from_slash_token(name: &str) -> Option<&str> {
+    if let Some(short_name) = name.strip_prefix(PROMPTS_CMD_SHORT_PREFIX) {
+        return (!short_name.is_empty()).then_some(short_name);
+    }
+    if let Some(rest) = name.strip_prefix(PROMPTS_CMD_PREFIX)
+        && let Some(legacy_name) = rest.strip_prefix(':')
+    {
+        return (!legacy_name.is_empty()).then_some(legacy_name);
+    }
+    (!name.is_empty()).then_some(name)
+}
+
 /// Extracts the unique placeholder variable names from a prompt template.
 ///
 /// A placeholder is any token that matches the pattern `$[A-Z][A-Z0-9_]*`
@@ -183,10 +203,10 @@ pub fn parse_prompt_inputs(
     Ok(map)
 }
 
-/// Expands a message of the form `/prompts:name [value] [value] …` using a matching saved prompt.
+/// Expands a message of the form `/name [value] [value] …` using a matching saved prompt.
 ///
-/// If the text does not start with `/prompts:`, or if no prompt named `name` exists,
-/// the function returns `Ok(None)`. On success it returns
+/// If the text does not start with a supported custom prompt prefix, or if no prompt named `name`
+/// exists, the function returns `Ok(None)`. On success it returns
 /// `Ok(Some(expanded))`; otherwise it returns a descriptive error.
 pub fn expand_custom_prompt(
     text: &str,
@@ -197,8 +217,7 @@ pub fn expand_custom_prompt(
         return Ok(None);
     };
 
-    // Only handle custom prompts when using the explicit prompts prefix with a colon.
-    let Some(prompt_name) = name.strip_prefix(&format!("{PROMPTS_CMD_PREFIX}:")) else {
+    let Some(prompt_name) = custom_prompt_name_from_slash_token(name) else {
         return Ok(None);
     };
 
@@ -283,8 +302,7 @@ pub fn extract_positional_args_for_prompt_line(
     let Some((name, rest, rest_offset)) = parse_slash_name(trimmed) else {
         return Vec::new();
     };
-    // Require the explicit prompts prefix for custom prompt invocations.
-    let Some(after_prefix) = name.strip_prefix(&format!("{PROMPTS_CMD_PREFIX}:")) else {
+    let Some(after_prefix) = custom_prompt_name_from_slash_token(name) else {
         return Vec::new();
     };
     if after_prefix != prompt_name {
@@ -548,10 +566,10 @@ fn append_joined_args_with_elements(
 /// Constructs a command text for a custom prompt with arguments.
 /// Returns the text and the cursor position (inside the first double quote).
 pub fn prompt_command_with_arg_placeholders(name: &str, args: &[String]) -> (String, usize) {
-    let mut text = format!("/{PROMPTS_CMD_PREFIX}:{name}");
+    let mut text = format!("/{name}");
     let mut cursor: usize = text.len();
     for (i, arg) in args.iter().enumerate() {
-        text.push_str(format!(" {arg}=\"\"").as_str());
+        text.push_str(&format!(" {arg}=\"\""));
         if i == 0 {
             cursor = text.len() - 1; // inside first ""
         }
@@ -583,6 +601,10 @@ mod tests {
                 text_elements: Vec::new(),
             })
         );
+
+        let out_plain =
+            expand_custom_prompt("/my-prompt USER=Alice BRANCH=main", &[], &prompts).unwrap();
+        assert_eq!(out_plain, out);
     }
 
     #[test]
@@ -741,6 +763,42 @@ mod tests {
                 },
                 PromptArg {
                     text: "beta".to_string(),
+                    text_elements: Vec::new(),
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_positional_args_accepts_short_prefix() {
+        let args = extract_positional_args_for_prompt_line("/+review one two", "review", &[]);
+        assert_eq!(
+            args,
+            vec![
+                PromptArg {
+                    text: "one".to_string(),
+                    text_elements: Vec::new(),
+                },
+                PromptArg {
+                    text: "two".to_string(),
+                    text_elements: Vec::new(),
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_positional_args_accepts_plain_prefix() {
+        let args = extract_positional_args_for_prompt_line("/review one two", "review", &[]);
+        assert_eq!(
+            args,
+            vec![
+                PromptArg {
+                    text: "one".to_string(),
+                    text_elements: Vec::new(),
+                },
+                PromptArg {
+                    text: "two".to_string(),
                     text_elements: Vec::new(),
                 }
             ]

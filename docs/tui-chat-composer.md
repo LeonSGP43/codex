@@ -107,7 +107,7 @@ the input starts with `!` (shell command).
 
 1. Expands any pending paste placeholders so element ranges align with the final text.
 2. Trims whitespace and rebases element ranges to the trimmed buffer.
-3. Expands `/prompts:` custom prompts:
+3. Expands custom prompts (`/name`, with `/+name` and `/prompts:name` retained for compatibility):
    - Named args use key=value parsing.
    - Numeric args use positional parsing for `$1..$9` and `$ARGUMENTS`.
      The expansion preserves text elements and yields the final submission payload.

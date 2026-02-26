@@ -3,6 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::widgets::WidgetRef;
 
 use super::popup_consts::MAX_POPUP_ROWS;
+use super::prompt_args::PROMPTS_CMD_SHORT_PREFIX;
 use super::scroll_state::ScrollState;
 use super::selection_popup_common::GenericDisplayRow;
 use super::selection_popup_common::render_rows;
@@ -148,7 +149,10 @@ impl CommandPopup {
         let filter_chars = filter.chars().count();
         let mut exact: Vec<(CommandItem, Option<Vec<usize>>)> = Vec::new();
         let mut prefix: Vec<(CommandItem, Option<Vec<usize>>)> = Vec::new();
-        let prompt_prefix_len = PROMPTS_CMD_PREFIX.chars().count() + 1;
+        let legacy_prompt_prefix = format!("{PROMPTS_CMD_PREFIX}:");
+        let short_prompt_prefix = PROMPTS_CMD_SHORT_PREFIX.to_string();
+        let filter_looks_legacy = filter_lower.starts_with(&legacy_prompt_prefix);
+        let filter_looks_short = filter_lower.starts_with(&short_prompt_prefix);
         let indices_for = |offset| Some((offset..offset + filter_chars).collect());
 
         let mut push_match =
@@ -175,17 +179,21 @@ impl CommandPopup {
         for (_, cmd) in self.builtins.iter() {
             push_match(CommandItem::Builtin(*cmd), cmd.command(), None, 0);
         }
-        // Support both search styles:
-        // - Typing "name" should surface "/prompts:name" results.
-        // - Typing "prompts:name" should also work.
+        // Support all custom prompt search styles:
+        // - Typing "name" should surface "/name" results.
+        // - Typing "+name" should still work.
+        // - Typing "prompts:name" remains supported for backward compatibility.
         for (idx, p) in self.prompts.iter().enumerate() {
-            let display = format!("{PROMPTS_CMD_PREFIX}:{}", p.name);
-            push_match(
-                CommandItem::UserPrompt(idx),
-                &display,
-                Some(&p.name),
-                prompt_prefix_len,
-            );
+            let display = p.name.clone();
+            push_match(CommandItem::UserPrompt(idx), &display, Some(&p.name), 0);
+            if filter_looks_short {
+                let short_display = format!("{PROMPTS_CMD_SHORT_PREFIX}{}", p.name).to_lowercase();
+                push_match(CommandItem::UserPrompt(idx), &short_display, None, 0);
+            }
+            if filter_looks_legacy {
+                let legacy_display = format!("{PROMPTS_CMD_PREFIX}:{}", p.name).to_lowercase();
+                push_match(CommandItem::UserPrompt(idx), &legacy_display, None, 0);
+            }
         }
 
         out.extend(exact);
@@ -214,10 +222,7 @@ impl CommandPopup {
                             .description
                             .clone()
                             .unwrap_or_else(|| "send saved prompt".to_string());
-                        (
-                            format!("/{PROMPTS_CMD_PREFIX}:{}", prompt.name),
-                            description,
-                        )
+                        (format!("/{}", prompt.name), description)
                     }
                 };
                 GenericDisplayRow {
@@ -372,6 +377,69 @@ mod tests {
             .collect();
         prompt_names.sort();
         assert_eq!(prompt_names, vec!["bar".to_string(), "foo".to_string()]);
+    }
+
+    #[test]
+    fn prompt_filter_supports_short_prefix() {
+        let mut popup = CommandPopup::new(
+            vec![CustomPrompt {
+                name: "draftpr".to_string(),
+                path: "/tmp/draftpr.md".to_string().into(),
+                content: "body".to_string(),
+                description: None,
+                argument_hint: None,
+            }],
+            CommandPopupFlags::default(),
+        );
+        popup.on_composer_text_change("/+dr".to_string());
+
+        assert_eq!(
+            popup.filtered_items(),
+            vec![CommandItem::UserPrompt(0)],
+            "expected '/+dr' to match the custom prompt"
+        );
+    }
+
+    #[test]
+    fn prompt_filter_supports_plain_prefix() {
+        let mut popup = CommandPopup::new(
+            vec![CustomPrompt {
+                name: "draftpr".to_string(),
+                path: "/tmp/draftpr.md".to_string().into(),
+                content: "body".to_string(),
+                description: None,
+                argument_hint: None,
+            }],
+            CommandPopupFlags::default(),
+        );
+        popup.on_composer_text_change("/dr".to_string());
+
+        assert_eq!(
+            popup.filtered_items(),
+            vec![CommandItem::UserPrompt(0)],
+            "expected '/dr' to match the custom prompt"
+        );
+    }
+
+    #[test]
+    fn prompt_filter_supports_legacy_prefix() {
+        let mut popup = CommandPopup::new(
+            vec![CustomPrompt {
+                name: "draftpr".to_string(),
+                path: "/tmp/draftpr.md".to_string().into(),
+                content: "body".to_string(),
+                description: None,
+                argument_hint: None,
+            }],
+            CommandPopupFlags::default(),
+        );
+        popup.on_composer_text_change("/prompts:dr".to_string());
+
+        assert_eq!(
+            popup.filtered_items(),
+            vec![CommandItem::UserPrompt(0)],
+            "expected '/prompts:dr' to match the custom prompt"
+        );
     }
 
     #[test]

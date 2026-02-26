@@ -39,7 +39,7 @@
 //!
 //! - Expands pending paste placeholders so element ranges align with the final text.
 //! - Trims whitespace and rebases text elements accordingly.
-//! - Expands `/prompts:` custom prompts (named or numeric args), preserving text elements.
+//! - Expands `/...` custom prompts (named or numeric args), preserving text elements.
 //! - Prunes local attached images so only placeholders that survive expansion are sent.
 //! - Preserves remote image URLs as separate attachments even when text is empty.
 //!
@@ -174,6 +174,8 @@ use super::skill_popup::MentionItem;
 use super::skill_popup::SkillPopup;
 use super::slash_commands;
 use crate::bottom_pane::paste_burst::FlushResult;
+use crate::bottom_pane::prompt_args::PROMPTS_CMD_SHORT_PREFIX;
+use crate::bottom_pane::prompt_args::custom_prompt_name_from_slash_token;
 use crate::bottom_pane::prompt_args::expand_custom_prompt;
 use crate::bottom_pane::prompt_args::expand_if_numeric_with_positional_args;
 use crate::bottom_pane::prompt_args::parse_slash_name;
@@ -186,7 +188,6 @@ use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
 use crate::style::user_message_style;
 use codex_protocol::custom_prompts::CustomPrompt;
-use codex_protocol::custom_prompts::PROMPTS_CMD_PREFIX;
 use codex_protocol::models::local_image_label_text;
 use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
@@ -1413,7 +1414,7 @@ impl ChatComposer {
                 }
                 let first_line = text.lines().next().unwrap_or("");
                 if let Some((name, _rest, _rest_offset)) = parse_slash_name(first_line)
-                    && let Some(prompt_name) = name.strip_prefix(&format!("{PROMPTS_CMD_PREFIX}:"))
+                    && let Some(prompt_name) = custom_prompt_name_from_slash_token(name)
                     && let Some(prompt) = self.custom_prompts.iter().find(|p| p.name == prompt_name)
                     && let Some(expanded) =
                         expand_if_numeric_with_positional_args(prompt, first_line, &text_elements)
@@ -2267,9 +2268,7 @@ impl ChatComposer {
                     self.windows_degraded_sandbox_active,
                 )
                 .is_some();
-                let prompt_prefix = format!("{PROMPTS_CMD_PREFIX}:");
-                let is_known_prompt = name
-                    .strip_prefix(&prompt_prefix)
+                let is_known_prompt = custom_prompt_name_from_slash_token(name)
                     .map(|prompt_name| {
                         self.custom_prompts
                             .iter()
@@ -3340,9 +3339,7 @@ impl ChatComposer {
         if is_builtin {
             return true;
         }
-        if let Some(rest) = name.strip_prefix(PROMPTS_CMD_PREFIX)
-            && let Some(prompt_name) = rest.strip_prefix(':')
-        {
+        if let Some(prompt_name) = custom_prompt_name_from_slash_token(name) {
             return self
                 .custom_prompts
                 .iter()
@@ -3402,7 +3399,10 @@ impl ChatComposer {
         }
 
         self.custom_prompts.iter().any(|prompt| {
-            fuzzy_match(&format!("{PROMPTS_CMD_PREFIX}:{}", prompt.name), name).is_some()
+            fuzzy_match(&prompt.name, name).is_some()
+                || fuzzy_match(&format!("{PROMPTS_CMD_SHORT_PREFIX}{}", prompt.name), name)
+                    .is_some()
+                || fuzzy_match(&format!("prompts:{}", prompt.name), name).is_some()
         })
     }
 
@@ -4368,10 +4368,10 @@ fn prompt_selection_action(
                 };
             }
             if has_numeric {
-                let text = format!("/{PROMPTS_CMD_PREFIX}:{} ", prompt.name);
+                let text = format!("/{} ", prompt.name);
                 return PromptSelectionAction::Insert { text, cursor: None };
             }
-            let text = format!("/{PROMPTS_CMD_PREFIX}:{}", prompt.name);
+            let text = format!("/{}", prompt.name);
             PromptSelectionAction::Insert { text, cursor: None }
         }
         PromptSelectionMode::Submit => {
@@ -4392,7 +4392,7 @@ fn prompt_selection_action(
                         text_elements: expanded.text_elements,
                     };
                 }
-                let text = format!("/{PROMPTS_CMD_PREFIX}:{} ", prompt.name);
+                let text = format!("/{} ", prompt.name);
                 return PromptSelectionAction::Insert { text, cursor: None };
             }
             PromptSelectionAction::Submit {
@@ -8520,7 +8520,7 @@ mod tests {
 
         composer.attach_image(PathBuf::from("/tmp/unused.png"));
         composer.textarea.set_cursor(0);
-        composer.handle_paste(format!("/{PROMPTS_CMD_PREFIX}:my-prompt "));
+        composer.handle_paste("/my-prompt ".to_string());
 
         let (result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -8809,7 +8809,7 @@ mod tests {
         // With no args typed, selecting the prompt inserts the command template
         // and does not submit immediately.
         assert_eq!(InputResult::None, result);
-        assert_eq!("/prompts:p ", composer.textarea.text());
+        assert_eq!("/p ", composer.textarea.text());
     }
 
     #[test]
